@@ -4,8 +4,6 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 1 * *"
 
 jobs:
   build:
@@ -19,7 +17,7 @@ jobs:
       - name: Setup Environment
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq repo curl git zip python3
+          sudo apt-get install -y -qq curl git zip python3
 
       - name: Download Android Clang Toolchain
         run: |
@@ -32,25 +30,11 @@ jobs:
           echo "Clang version:"
           ./clang-r487747c/bin/clang --version
 
-      - name: Download Bazelisk
+      - name: Clone Kernel Source
         run: |
-          mkdir -p tools
-          curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64 -o tools/bazel
-          chmod +x tools/bazel
-          ./tools/bazel --version
-
-      - name: Sync Kernel Sources
-        run: |
-          mkdir -p msm-kernel
-          cd msm-kernel
-          repo init -u https://github.com/ApexLegend007/peridot-kernel-manifest -b main --depth=1
-          repo sync -c --no-tags -j$(nproc) || true
-          # Manual clone if repo fails
-          if [ ! -d "arch" ]; then
-            cd /tmp
-            git clone https://github.com/ApexLegend007/peridot-msm-kernel.git -b peridot-u-oss --depth=1
-            mv peridot-msm-kernel/* /home/runner/work/peridot-nethunter-kernel/peridot-nethunter-kernel/msm-kernel/
-          fi
+          cd /tmp
+          git clone https://github.com/Peridot-Development/kernel_xiaomi_peridot.git -b peridot-u-oss --depth=1 msm-kernel
+          mv msm-kernel /home/runner/work/peridot-nethunter-kernel/peridot-nethunter-kernel/
 
       - name: Apply KernelSU
         run: |
@@ -58,15 +42,16 @@ jobs:
           if [ ! -d "KernelSU" ]; then
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           fi
-          # Fix Kconfig issues
           sed -i "/source.*hwid\/Kconfig/d" drivers/misc/Kconfig 2>/dev/null || true
           sed -i "/source.*kernelsu\/Kconfig/d" drivers/Kconfig 2>/dev/null || true
+          # Fix permissions
+          find scripts -type f -exec chmod +x {} \; 2>/dev/null || true
 
       - name: Apply NetHunter Patches
         run: |
           cd msm-kernel
           
-          # RTL8188EUS driver (aircrack-ng fork with injection)
+          # RTL8188EUS driver
           if [ ! -d "drivers/net/wireless/realtek/rtl8188eus" ]; then
             git clone https://github.com/aircrack-ng/rtl8188eus.git drivers/net/wireless/realtek/rtl8188eus --depth=1
             echo "obj-\$(CONFIG_RTL8188EUS) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
@@ -74,7 +59,7 @@ jobs:
             sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl8188eus/Kconfig
           fi
           
-          # RTL88xxAU driver (morrownr fork with injection)
+          # RTL88xxAU driver
           if [ ! -d "drivers/net/wireless/realtek/rtl88xxau" ]; then
             git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/realtek/rtl88xxau --depth=1
             echo "obj-\$(CONFIG_RTL88XXAU) += rtl88xxau/" >> drivers/net/wireless/realtek/Makefile
@@ -82,11 +67,18 @@ jobs:
             sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl88xxau/Kconfig 2>/dev/null || true
           fi
           
+          # Fix Realtek Kconfig
+          head -20 drivers/net/wireless/realtek/Kconfig > /tmp/kconfig_fix
+          echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> /tmp/kconfig_fix
+          echo "source \"drivers/net/wireless/realtek/rtl88xxau/Kconfig\"" >> /tmp/kconfig_fix
+          echo "endif # WLAN_VENDOR_REALTEK" >> /tmp/kconfig_fix
+          mv /tmp/kconfig_fix drivers/net/wireless/realtek/Kconfig
+          
           # mac80211 injection patch
           wget -q https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
           patch -p1 < mac80211.patch 2>&1 || echo "Patch applied or skipped"
 
-      - name: Configure Kernel (NetHunter + KernelSU)
+      - name: Configure Kernel
         run: |
           cd msm-kernel
           export ARCH=arm64
@@ -99,6 +91,7 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
+          export CLANG_VERSION=170002
           
           make O=out gki_defconfig
           
