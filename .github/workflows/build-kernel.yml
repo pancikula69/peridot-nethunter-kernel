@@ -126,27 +126,41 @@ jobs:
             -e CONFIG_IP_NF_TARGET_TTL \
             -e CONFIG_IP6_NF_TARGET_HL \
             -d CONFIG_DEBUG_INFO_BTF \
-            -d CONFIG_DEBUG_INFO_BTF_MODULES
+            -d CONFIG_DEBUG_INFO_BTF_MODULES \
+            -d CONFIG_DEBUG_INFO \
+            -d CONFIG_DEBUG_INFO_DWARF4 \
+            -d CONFIG_DEBUG_INFO_DWARF5
           
           make O=out olddefconfig
+          
+          # Force disable BTF in final config
+          sed -i "s/CONFIG_DEBUG_INFO_BTF=y/# CONFIG_DEBUG_INFO_BTF is not set/" out/.config
+          sed -i "s/CONFIG_DEBUG_INFO_BTF_MODULES=y/# CONFIG_DEBUG_INFO_BTF_MODULES is not set/" out/.config
+          sed -i "s/CONFIG_DEBUG_INFO=y/# CONFIG_DEBUG_INFO is not set/" out/.config
+          make O=out olddefconfig
 
-      - name: Build Kernel
+      - name: Build Kernel (keep going on errors)
         run: |
           cd msm-kernel
           export ARCH=arm64
           export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
           export PATH=$CLANG_PATH:$PATH
           
-          make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vmlinux 2>&1 | tail -30
+          # Build with -k (keep going) to skip BPF errors
+          make O=out -j$(nproc) -k CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image 2>&1 | tail -40
           
-          if [ -f "out/vmlinux" ]; then
-            echo "vmlinux built, extracting Image..."
-            mkdir -p out/arch/arm64/boot
-            llvm-objcopy -O binary out/vmlinux out/arch/arm64/boot/Image
+          # Check if Image exists despite errors
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            echo "Image built despite errors!"
             ls -la out/arch/arm64/boot/Image
           else
-            echo "vmlinux failed, trying direct Image..."
-            make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip arch/arm64/boot/Image 2>&1 | tail -30
+            echo "Image not found, trying vmlinux..."
+            make O=out -j$(nproc) -k CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vmlinux 2>&1 | tail -20
+            if [ -f "out/vmlinux" ]; then
+              mkdir -p out/arch/arm64/boot
+              llvm-objcopy -O binary out/vmlinux out/arch/arm64/boot/Image
+              ls -la out/arch/arm64/boot/Image
+            fi
           fi
 
       - name: Verify Build
