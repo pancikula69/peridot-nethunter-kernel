@@ -17,7 +17,7 @@ jobs:
       - name: Setup Environment
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq curl git zip python3
+          sudo apt-get install -y -qq curl git zip python3 flex bison bc
 
       - name: Download Android Clang Toolchain
         run: |
@@ -44,14 +44,12 @@ jobs:
           fi
           sed -i "/source.*hwid\/Kconfig/d" drivers/misc/Kconfig 2>/dev/null || true
           sed -i "/source.*kernelsu\/Kconfig/d" drivers/Kconfig 2>/dev/null || true
-          # Fix permissions
           find scripts -type f -exec chmod +x {} \; 2>/dev/null || true
 
       - name: Apply NetHunter Patches
         run: |
           cd msm-kernel
           
-          # RTL8188EUS driver
           if [ ! -d "drivers/net/wireless/realtek/rtl8188eus" ]; then
             git clone https://github.com/aircrack-ng/rtl8188eus.git drivers/net/wireless/realtek/rtl8188eus --depth=1
             echo "obj-\$(CONFIG_RTL8188EUS) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
@@ -59,7 +57,6 @@ jobs:
             sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl8188eus/Kconfig
           fi
           
-          # RTL88xxAU driver
           if [ ! -d "drivers/net/wireless/realtek/rtl88xxau" ]; then
             git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/realtek/rtl88xxau --depth=1
             echo "obj-\$(CONFIG_RTL88XXAU) += rtl88xxau/" >> drivers/net/wireless/realtek/Makefile
@@ -67,14 +64,12 @@ jobs:
             sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl88xxau/Kconfig 2>/dev/null || true
           fi
           
-          # Fix Realtek Kconfig
           head -20 drivers/net/wireless/realtek/Kconfig > /tmp/kconfig_fix
           echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> /tmp/kconfig_fix
           echo "source \"drivers/net/wireless/realtek/rtl88xxau/Kconfig\"" >> /tmp/kconfig_fix
           echo "endif # WLAN_VENDOR_REALTEK" >> /tmp/kconfig_fix
           mv /tmp/kconfig_fix drivers/net/wireless/realtek/Kconfig
           
-          # mac80211 injection patch
           wget -q https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
           patch -p1 < mac80211.patch 2>&1 || echo "Patch applied or skipped"
 
@@ -121,18 +116,30 @@ jobs:
             -e CONFIG_WIREGUARD \
             -e CONFIG_IP_NF_TARGET_TTL \
             -e CONFIG_IP6_NF_TARGET_HL \
-            -d CONFIG_DEBUG_INFO_BTF
+            -d CONFIG_DEBUG_INFO_BTF \
+            -d CONFIG_DEBUG_INFO_BTF_MODULES
           
           make O=out olddefconfig
 
-      - name: Build Kernel
+      - name: Build Kernel (skip BPF tools)
         run: |
           cd msm-kernel
           export ARCH=arm64
           export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
           export PATH=$CLANG_PATH:$PATH
           
-          make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image 2>&1 | tail -50
+          # Build vmlinux first (avoids BPF tools dependency)
+          make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vmlinux 2>&1 | tail -30
+          
+          # Extract Image from vmlinux
+          if [ -f "out/vmlinux" ]; then
+            echo "vmlinux built successfully, extracting Image..."
+            llvm-objcopy -O binary out/vmlinux out/arch/arm64/boot/Image
+            ls -la out/arch/arm64/boot/Image
+          else
+            echo "vmlinux not found, trying direct Image build..."
+            make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip arch/arm64/boot/Image 2>&1 | tail -30
+          fi
 
       - name: Verify Build
         run: |
