@@ -1,0 +1,9 @@
+# GKI kernel aliases — Kleaf looks for these targets in //common/.
+# Since this workspace uses msm-kernel as the kernel package, we alias them.
+package(default_visibility = ["//visibility:public"])
+
+alias(name = "kernel_aarch64",             actual = "//msm-kernel:kernel_aarch64")
+alias(name = "kernel_aarch64_consolidate", actual = "//msm-kernel:kernel_aarch64_consolidate")
+alias(name = "kernel_aarch64_sources",     actual = "//msm-kernel:kernel_aarch64_sources")
+alias(name = "kernel_x86_64_sources",      actual = "//msm-kernel:kernel_x86_64_sources")
+alias(name = "build.config.constants",     actual = "//msm-kernel:build.config.constants")

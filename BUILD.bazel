@@ -1,0 +1,13 @@
+# Root BUILD.bazel – Bazel workspace root marker.
+# Actual kernel build targets are in //msm-kernel (defined via define_msm_platforms()).
+
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+# No-op flag: build_with_bazel.py appends --ignore_missing_projects to Bazel
+# args. The flag is normally parsed by kleaf/bazel.py before reaching Bazel;
+# define it here so Bazel 6.x accepts it without error.
+bool_flag(
+    name = "ignore_missing_projects",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)

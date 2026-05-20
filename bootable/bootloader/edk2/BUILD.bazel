@@ -1,0 +1,17 @@
+# Stub BUILD.bazel for bootable/bootloader/edk2
+# The real ABL source is not present; provide empty stub targets so the kernel
+# build can proceed without ABL artifacts.
+
+package(default_visibility = ["//visibility:public"])
+
+# Stub ABL targets for peridot (SM8650). These are referenced by
+# //msm-kernel:msm_abl.bzl via alias(), so they must exist.
+filegroup(
+    name = "peridot_gki_abl",
+    srcs = [],
+)
+
+filegroup(
+    name = "peridot_consolidate_abl",
+    srcs = [],
+)

@@ -1,0 +1,16 @@
+#!/bin/sh
+# toybox stub: delegates to system tools
+# Called as "toybox COMMAND args..." or as "tar", "realpath", etc. via argv[0]
+CMD=$(basename "$0")
+if [ "$CMD" = "toybox" ]; then
+    # First arg is the command
+    CMD="$1"
+    shift
+fi
+# Handle tar specially - some args are toybox-specific
+if [ "$CMD" = "tar" ]; then
+    exec /usr/bin/tar "$@"
+fi
+# Use the system PATH (not hermetic PATH) to find the real binary.
+# Without this, exec "$CMD" would recurse back into this script.
+exec /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin "$CMD" "$@"

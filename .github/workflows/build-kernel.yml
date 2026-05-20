@@ -1,0 +1,166 @@
+name: Build NetHunter Kernel for POCO F6 (peridot)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 1 * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq repo curl git zip python3
+
+      - name: Download Android Clang Toolchain
+        run: |
+          mkdir -p prebuilts/clang/host/linux-x86
+          cd prebuilts/clang/host/linux-x86
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz" -o clang.tar.gz
+          mkdir -p clang-r487747c
+          tar xzf clang.tar.gz -C clang-r487747c
+          rm clang.tar.gz
+          echo "Clang version:"
+          ./clang-r487747c/bin/clang --version
+
+      - name: Download Bazelisk
+        run: |
+          mkdir -p tools
+          curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64 -o tools/bazel
+          chmod +x tools/bazel
+          ./tools/bazel --version
+
+      - name: Sync Kernel Sources
+        run: |
+          mkdir -p msm-kernel
+          cd msm-kernel
+          repo init -u https://github.com/ApexLegend007/peridot-kernel-manifest -b main --depth=1
+          repo sync -c --no-tags -j$(nproc) || true
+          # Manual clone if repo fails
+          if [ ! -d "arch" ]; then
+            cd /tmp
+            git clone https://github.com/ApexLegend007/peridot-msm-kernel.git -b peridot-u-oss --depth=1
+            mv peridot-msm-kernel/* /home/runner/work/peridot-nethunter-kernel/peridot-nethunter-kernel/msm-kernel/
+          fi
+
+      - name: Apply KernelSU
+        run: |
+          cd msm-kernel
+          if [ ! -d "KernelSU" ]; then
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          fi
+          # Fix Kconfig issues
+          sed -i "/source.*hwid\/Kconfig/d" drivers/misc/Kconfig 2>/dev/null || true
+          sed -i "/source.*kernelsu\/Kconfig/d" drivers/Kconfig 2>/dev/null || true
+
+      - name: Apply NetHunter Patches
+        run: |
+          cd msm-kernel
+          
+          # RTL8188EUS driver (aircrack-ng fork with injection)
+          if [ ! -d "drivers/net/wireless/realtek/rtl8188eus" ]; then
+            git clone https://github.com/aircrack-ng/rtl8188eus.git drivers/net/wireless/realtek/rtl8188eus --depth=1
+            echo "obj-\$(CONFIG_RTL8188EUS) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
+            echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> drivers/net/wireless/realtek/Kconfig
+            sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl8188eus/Kconfig
+          fi
+          
+          # RTL88xxAU driver (morrownr fork with injection)
+          if [ ! -d "drivers/net/wireless/realtek/rtl88xxau" ]; then
+            git clone https://github.com/morrownr/8812au-20210820.git drivers/net/wireless/realtek/rtl88xxau --depth=1
+            echo "obj-\$(CONFIG_RTL88XXAU) += rtl88xxau/" >> drivers/net/wireless/realtek/Makefile
+            echo "source \"drivers/net/wireless/realtek/rtl88xxau/Kconfig\"" >> drivers/net/wireless/realtek/Kconfig
+            sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl88xxau/Kconfig 2>/dev/null || true
+          fi
+          
+          # mac80211 injection patch
+          wget -q https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
+          patch -p1 < mac80211.patch 2>&1 || echo "Patch applied or skipped"
+
+      - name: Configure Kernel (NetHunter + KernelSU)
+        run: |
+          cd msm-kernel
+          export ARCH=arm64
+          export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
+          export PATH=$CLANG_PATH:$PATH
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          
+          make O=out gki_defconfig
+          
+          scripts/config --file out/.config \
+            -e CONFIG_KSU \
+            -e CONFIG_USB_GADGET \
+            -e CONFIG_USB_CONFIGFS \
+            -e CONFIG_USB_CONFIGFS_F_HID \
+            -e CONFIG_HIDRAW \
+            -e CONFIG_USB_G_HID \
+            -e CONFIG_USB_DUMMY_HCD \
+            -e CONFIG_USB_CONFIGFS_MASS_STORAGE \
+            -e CONFIG_MAC80211 \
+            -e CONFIG_MAC80211_HWSIM \
+            -e CONFIG_CFG80211_WEXT \
+            -e CONFIG_WIRELESS_EXT \
+            -e CONFIG_WLAN_VENDOR_REALTEK \
+            -m CONFIG_RTL8188EUS \
+            -m CONFIG_RTL88XXAU \
+            -e CONFIG_BT \
+            -e CONFIG_BT_RFCOMM \
+            -e CONFIG_BT_HIDP \
+            -m CONFIG_BT_HCIBTUSB \
+            -m CONFIG_BT_HCIUART \
+            -e CONFIG_NFS_FS \
+            -e CONFIG_NFSD \
+            -e CONFIG_WIREGUARD \
+            -e CONFIG_IP_NF_TARGET_TTL \
+            -e CONFIG_IP6_NF_TARGET_HL
+          
+          make O=out olddefconfig
+
+      - name: Build Kernel
+        run: |
+          cd msm-kernel
+          export ARCH=arm64
+          export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
+          export PATH=$CLANG_PATH:$PATH
+          
+          make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image 2>&1 | tail -50
+
+      - name: Verify Build
+        run: |
+          if [ -f "msm-kernel/out/arch/arm64/boot/Image" ]; then
+            echo "BUILD SUCCESS!"
+            ls -la msm-kernel/out/arch/arm64/boot/Image
+            echo "Modules:"
+            find msm-kernel/out/ -name "*.ko" | head -20
+          else
+            echo "BUILD FAILED - Image not found"
+            exit 1
+          fi
+
+      - name: Package AnyKernel3
+        run: |
+          mkdir -p anykernel
+          cd anykernel
+          git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 .
+          rm -rf .git
+          cp ../msm-kernel/out/arch/arm64/boot/Image ./
+          mkdir -p modules/vendor/lib/modules/
+          find ../msm-kernel/out/ -name "*.ko" -exec cp {} ./modules/vendor/lib/modules/ \; 2>/dev/null || true
+          
+          cat > anykernel.sh << "AKSH"
+          properties() { 
