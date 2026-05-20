@@ -21,11 +21,20 @@ jobs:
 
       - name: Download Android Clang Toolchain
         run: |
-          mkdir -p prebuilts/clang/host/linux-x86
+          mkdir -p prebuilts/clang/host/linux-x86/clang-r487747c
           cd prebuilts/clang/host/linux-x86
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz" -o clang.tar.gz
-          mkdir -p clang-r487747c
-          tar xzf clang.tar.gz -C clang-r487747c
+          for i in 1 2 3; do
+            echo "Download attempt $i..."
+            curl -L --retry 5 --retry-delay 10 --max-time 900 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz" -o clang.tar.gz
+            if [ -f clang.tar.gz ] && [ $(stat -c%s clang.tar.gz) -gt 500000000 ]; then
+              echo "Download OK ($(du -sh clang.tar.gz | cut -f1))"
+              break
+            else
+              echo "Download failed or too small, retrying..."
+              rm -f clang.tar.gz
+            fi
+          done
+          tar xzf clang.tar.gz -C clang-r487747c || { echo "Extract failed, retrying..."; rm -rf clang-r487747c/*; tar xzf clang.tar.gz -C clang-r487747c; }
           rm clang.tar.gz
           echo "Clang version:"
           ./clang-r487747c/bin/clang --version
@@ -40,7 +49,7 @@ jobs:
         run: |
           cd msm-kernel
           if [ ! -d "KernelSU" ]; then
-            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+            curl -LSs --retry 5 "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
           fi
           sed -i "/source.*hwid\/Kconfig/d" drivers/misc/Kconfig 2>/dev/null || true
           sed -i "/source.*kernelsu\/Kconfig/d" drivers/Kconfig 2>/dev/null || true
@@ -70,7 +79,7 @@ jobs:
           echo "endif # WLAN_VENDOR_REALTEK" >> /tmp/kconfig_fix
           mv /tmp/kconfig_fix drivers/net/wireless/realtek/Kconfig
           
-          wget -q https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
+          wget -q --retry-connrefused --waitretry=10 --tries=5 https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
           patch -p1 < mac80211.patch 2>&1 || echo "Patch applied or skipped"
 
       - name: Configure Kernel
@@ -121,23 +130,22 @@ jobs:
           
           make O=out olddefconfig
 
-      - name: Build Kernel (skip BPF tools)
+      - name: Build Kernel
         run: |
           cd msm-kernel
           export ARCH=arm64
           export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
           export PATH=$CLANG_PATH:$PATH
           
-          # Build vmlinux first (avoids BPF tools dependency)
           make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip vmlinux 2>&1 | tail -30
           
-          # Extract Image from vmlinux
           if [ -f "out/vmlinux" ]; then
-            echo "vmlinux built successfully, extracting Image..."
+            echo "vmlinux built, extracting Image..."
+            mkdir -p out/arch/arm64/boot
             llvm-objcopy -O binary out/vmlinux out/arch/arm64/boot/Image
             ls -la out/arch/arm64/boot/Image
           else
-            echo "vmlinux not found, trying direct Image build..."
+            echo "vmlinux failed, trying direct Image..."
             make O=out -j$(nproc) CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip arch/arm64/boot/Image 2>&1 | tail -30
           fi
 
