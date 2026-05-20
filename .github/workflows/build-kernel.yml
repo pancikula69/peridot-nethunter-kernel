@@ -120,7 +120,8 @@ jobs:
             -e CONFIG_NFSD \
             -e CONFIG_WIREGUARD \
             -e CONFIG_IP_NF_TARGET_TTL \
-            -e CONFIG_IP6_NF_TARGET_HL
+            -e CONFIG_IP6_NF_TARGET_HL \
+            -d CONFIG_DEBUG_INFO_BTF
           
           make O=out olddefconfig
 
