@@ -59,12 +59,12 @@ jobs:
         run: |
           cd msm-kernel
           
-          # Clone kimocoder wireless modules (only rtl8188eus)
+          # RTL8188EU from kimocoder (nethunter_wireless_modules)
           if [ ! -d "drivers/net/wireless/realtek/rtl8188eus" ]; then
-            git clone https://github.com/kimocoder/nethunter_wireless_modules.git /tmp/nethunter_wireless --depth=1
+            git clone --depth=1 https://github.com/kimocoder/nethunter_wireless_modules.git /tmp/nethunter_wireless
             cp -r /tmp/nethunter_wireless/rtl8188eus drivers/net/wireless/realtek/rtl8188eus
             rm -rf /tmp/nethunter_wireless
-            echo "obj-\$(CONFIG_RTL8188EUS) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
+            echo "obj-\$(CONFIG_RTL8188EU) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
             echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> drivers/net/wireless/realtek/Kconfig
             sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl8188eus/Kconfig 2>/dev/null || true
           fi
@@ -101,7 +101,7 @@ jobs:
             -e CONFIG_USB_GADGET \
             -e CONFIG_USB_CONFIGFS \
             -e CONFIG_USB_CONFIGFS_F_HID \
-            -e CONFIG_USB_CONFIGFS_UEVENT \
+            -e CONFIG_USB_CONFIGFS_SERIAL \
             -e CONFIG_USB_CONFIGFS_ACM \
             -e CONFIG_USB_CONFIGFS_OBEX \
             -e CONFIG_USB_CONFIGFS_NCM \
@@ -111,39 +111,27 @@ jobs:
             -e CONFIG_USB_CONFIGFS_EEM \
             -e CONFIG_USB_CONFIGFS_MASS_STORAGE \
             -e CONFIG_USB_CONFIGFS_F_FS \
-            -e CONFIG_USB_CONFIGFS_F_ACC \
-            -e CONFIG_USB_CONFIGFS_F_AUDIO_SRC \
-            -e CONFIG_USB_CONFIGFS_F_UAC2 \
-            -e CONFIG_USB_CONFIGFS_F_MIDI \
-            -e CONFIG_USB_CONFIGFS_F_UVC \
-            -e CONFIG_USB_CONFIGFS_F_PRINTER \
-            -e CONFIG_USB_CONFIGFS_F_TCM \
-            -e CONFIG_USB_CONFIGFS_F_CDM \
-            -e CONFIG_USB_GADGET_VBUS_DRAW \
-            -e CONFIG_USB_GADGETFS \
-            -e CONFIG_USB_F_HID \
-            -e CONFIG_USB_G_HID \
-            -e CONFIG_HIDRAW \
             -e CONFIG_HID \
-            -e CONFIG_USB_HID \
-            -e CONFIG_USB_HIDDEV \
-            -e CONFIG_USB_DUMMY_HCD \
+            -e CONFIG_HIDRAW \
+            -e CONFIG_USB_G_HID \
+            -e CONFIG_USB_ACM \
             -e CONFIG_MAC80211 \
             -e CONFIG_MAC80211_HWSIM \
+            -e CONFIG_CFG80211 \
             -e CONFIG_CFG80211_WEXT \
             -e CONFIG_WIRELESS_EXT \
+            -e CONFIG_CFG80211_CERTIFICATION_ONUS \
             -e CONFIG_WLAN_VENDOR_REALTEK \
-            -m CONFIG_RTL8188EUS \
+            -m CONFIG_RTL8188EU \
             -e CONFIG_BT \
             -e CONFIG_BT_RFCOMM \
             -e CONFIG_BT_HIDP \
-            -m CONFIG_BT_HCIBTUSB \
-            -m CONFIG_BT_HCIUART \
-            -e CONFIG_NFS_FS \
+            -e CONFIG_BT_BREDR \
             -e CONFIG_NFSD \
             -e CONFIG_WIREGUARD \
-            -e CONFIG_IP_NF_TARGET_TTL \
-            -e CONFIG_IP6_NF_TARGET_HL \
+            -e CONFIG_MODULES \
+            -e CONFIG_MODULE_UNLOAD \
+            -e CONFIG_MODULE_FORCE_LOAD \
             -d CONFIG_DEBUG_INFO_BTF \
             -d CONFIG_DEBUG_INFO_BTF_MODULES \
             -d CONFIG_DEBUG_INFO \
@@ -167,10 +155,8 @@ jobs:
           export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
           export PATH=$CLANG_PATH:$PATH
           
-          # Build with -k (keep going) to skip non-critical errors
           make O=out -j$(nproc) -k CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image 2>&1 | tail -40
           
-          # Check if Image exists
           if [ -f "out/arch/arm64/boot/Image" ]; then
             echo "Image built!"
             ls -la out/arch/arm64/boot/Image
@@ -205,6 +191,11 @@ jobs:
           cp ../msm-kernel/out/arch/arm64/boot/Image ./
           mkdir -p modules/vendor/lib/modules/
           find ../msm-kernel/out/ -name "*.ko" -exec cp {} ./modules/vendor/lib/modules/ \; 2>/dev/null || true
+          
+          # Blacklist original RTL drivers
+          mkdir -p modules/vendor/lib/modules/
+          echo "blacklist r8188eu" > modules/vendor/lib/modules/blacklist.conf
+          echo "blacklist 8188eu" >> modules/vendor/lib/modules/blacklist.conf
           
           cat > anykernel.sh << "AKSH"
           properties() { 
