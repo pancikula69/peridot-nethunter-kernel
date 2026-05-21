@@ -1,0 +1,159 @@
+name: Build LineageOS NetHunter Kernel for POCO F6
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl git zip python3 flex bison bc
+
+      - name: Download Android Clang Toolchain
+        run: |
+          mkdir -p prebuilts/clang/host/linux-x86/clang-r487747c
+          cd prebuilts/clang/host/linux-x86
+          for i in 1 2 3; do
+            curl -L --retry 5 --retry-delay 10 --max-time 900 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz" -o clang.tar.gz
+            if [ -f clang.tar.gz ] && [ $(stat -c%s clang.tar.gz) -gt 500000000 ]; then
+              echo "Download OK"
+              break
+            fi
+            rm -f clang.tar.gz
+          done
+          tar xzf clang.tar.gz -C clang-r487747c || { rm -rf clang-r487747c/*; tar xzf clang.tar.gz -C clang-r487747c; }
+          rm clang.tar.gz
+
+      - name: Clone LineageOS Kernel
+        run: |
+          cd /tmp
+          git clone https://github.com/LineageOS/android_kernel_xiaomi_sm8635.git -b lineage-23.2 --depth=1 msm-kernel
+          mv msm-kernel /home/runner/work/peridot-nethunter-kernel/peridot-nethunter-kernel/
+
+      - name: Apply KernelSU
+        run: |
+          cd msm-kernel
+          if [ ! -d "KernelSU" ]; then
+            curl -LSs --retry 5 "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          fi
+          sed -i "/source.*hwid\/Kconfig/d" drivers/misc/Kconfig 2>/dev/null || true
+          sed -i "/source.*kernelsu\/Kconfig/d" drivers/Kconfig 2>/dev/null || true
+          find scripts -type f -exec chmod +x {} \; 2>/dev/null || true
+
+      - name: Apply NetHunter Patches
+        run: |
+          cd msm-kernel
+          
+          # RTL8188EUS from kimocoder
+          if [ ! -d "drivers/net/wireless/realtek/rtl8188eus" ]; then
+            git clone --depth=1 https://github.com/kimocoder/nethunter_wireless_modules.git /tmp/nethunter_wireless
+            cp -r /tmp/nethunter_wireless/rtl8188eus drivers/net/wireless/realtek/rtl8188eus
+            rm -rf /tmp/nethunter_wireless
+            echo "obj-\$(CONFIG_RTL8188EU) += rtl8188eus/" >> drivers/net/wireless/realtek/Makefile
+            echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> drivers/net/wireless/realtek/Kconfig
+            sed -i "s/---help---/help/g" drivers/net/wireless/realtek/rtl8188eus/Kconfig 2>/dev/null || true
+          fi
+          
+          # Fix Realtek Kconfig
+          head -20 drivers/net/wireless/realtek/Kconfig > /tmp/kconfig_fix
+          echo "source \"drivers/net/wireless/realtek/rtl8188eus/Kconfig\"" >> /tmp/kconfig_fix
+          echo "endif # WLAN_VENDOR_REALTEK" >> /tmp/kconfig_fix
+          mv /tmp/kconfig_fix drivers/net/wireless/realtek/Kconfig
+          
+          # mac80211 injection patch
+          wget -q --retry-connrefused --waitretry=10 --tries=5 https://raw.githubusercontent.com/kimocoder/mac80211_hwsim_injection/master/mac80211_injection_6.1.patch -O mac80211.patch || true
+          patch -p1 < mac80211.patch 2>&1 || echo "Patch applied or skipped"
+
+      - name: Configure Kernel
+        run: |
+          cd msm-kernel
+          export ARCH=arm64
+          export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
+          export PATH=$CLANG_PATH:$PATH
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export CLANG_VERSION=170002
+          
+          make O=out gki_defconfig
+          
+          scripts/config --file out/.config \
+            -e CONFIG_KSU \
+            -e CONFIG_USB_GADGET \
+            -e CONFIG_USB_CONFIGFS \
+            -e CONFIG_USB_CONFIGFS_F_HID \
+            -e CONFIG_HIDRAW \
+            -e CONFIG_USB_G_HID \
+            -e CONFIG_USB_ACM \
+            -e CONFIG_MAC80211 \
+            -e CONFIG_MAC80211_HWSIM \
+            -e CONFIG_CFG80211_WEXT \
+            -e CONFIG_WIRELESS_EXT \
+            -e CONFIG_WLAN_VENDOR_REALTEK \
+            -m CONFIG_RTL8188EU \
+            -e CONFIG_BT \
+            -e CONFIG_BT_RFCOMM \
+            -e CONFIG_BT_HIDP \
+            -e CONFIG_NFSD \
+            -e CONFIG_WIREGUARD \
+            -e CONFIG_MODULES \
+            -e CONFIG_MODULE_UNLOAD \
+            -e CONFIG_MODULE_FORCE_LOAD \
+            -d CONFIG_DEBUG_INFO_BTF \
+            -d CONFIG_DEBUG_INFO_BTF_MODULES \
+            -d CONFIG_DEBUG_INFO \
+            --set-val CONFIG_FRAME_WARN 4096
+          
+          make O=out olddefconfig
+          
+          sed -i "s/CONFIG_DEBUG_INFO_BTF=y/# CONFIG_DEBUG_INFO_BTF is not set/" out/.config
+          sed -i "s/CONFIG_DEBUG_INFO=y/# CONFIG_DEBUG_INFO is not set/" out/.config
+          make O=out olddefconfig
+
+      - name: Build Kernel + Modules
+        run: |
+          cd msm-kernel
+          export ARCH=arm64
+          export CLANG_PATH=$(pwd)/../prebuilts/clang/host/linux-x86/clang-r487747c/bin
+          export PATH=$CLANG_PATH:$PATH
+          
+          # Build Image
+          make O=out -j$(nproc) -k CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip Image 2>&1 | tail -20
+          
+          # Build modules
+          make O=out -j$(nproc) -k CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip modules 2>&1 | tail -20
+          
+          echo "=== Image ===" && ls -la out/arch/arm64/boot/Image 2>/dev/null || echo "No Image"
+          echo "=== Modules ===" && find out/ -name "*.ko" 2>/dev/null | head -20
+
+      - name: Package for KernelSU
+        run: |
+          mkdir -p output
+          cp msm-kernel/out/arch/arm64/boot/Image output/ 2>/dev/null || true
+          find msm-kernel/out/ -name "*.ko" -exec cp {} output/ \; 2>/dev/null || true
+          ls -la output/
+          
+          cd output
+          zip -r ../LineageOS-NetHunter-KernelSU-Peridot.zip *
+          cd ..
+          cp LineageOS-NetHunter-KernelSU-Peridot.zip /home/runner/work/peridot-nethunter-kernel/peridot-nethunter-kernel/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LineageOS-NetHunter-KernelSU-Peridot
+          path: LineageOS-NetHunter-KernelSU-Peridot.zip
